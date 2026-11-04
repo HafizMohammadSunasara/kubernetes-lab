@@ -1,0 +1,33 @@
+version: 0.2
+
+phases:
+  install:
+    commands:
+      - echo "Installing kubectl..."
+      - curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/1.30.0/2024-05-12/bin/linux/amd64/kubectl
+      - chmod +x ./kubectl
+      - mv ./kubectl /usr/local/bin/kubectl
+      - kubectl version --client
+  pre_build:
+    commands:
+      - echo "Logging in to Amazon ECR..."
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REPO_URI
+      - IMAGE_TAG=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - if [ -z "$IMAGE_TAG" ]; then IMAGE_TAG=latest; fi
+      - IMAGE_URI=$ECR_REPO_URI:$IMAGE_TAG
+      - echo "Building image URI $IMAGE_URI"
+  build:
+    commands:
+      - echo "Building Docker image..."
+      - docker build -t $IMAGE_URI .
+      - echo "Pushing Docker image to ECR..."
+      - docker push $IMAGE_URI
+  post_build:
+    commands:
+      - echo "Updating kubeconfig for EKS cluster $EKS_CLUSTER_NAME..."
+      - aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_DEFAULT_REGION
+      - echo "Replacing IMAGE_PLACEHOLDER with $IMAGE_URI in k8s-deployment.yaml..."
+      - sed -i "s|IMAGE_PLACEHOLDER|$IMAGE_URI|g" k8s-deployment.yaml
+      - echo "Applying Kubernetes manifests to EKS..."
+      - kubectl apply -f k8s-deployment.yaml
+      - kubectl rollout status deployment/web-app
